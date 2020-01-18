@@ -52,7 +52,8 @@ struct ieee80211_channel *slsi_find_scan_channel(struct slsi_dev *sdev, struct i
 }
 
 static struct ieee80211_mgmt *slsi_rx_scan_update_ssid(struct slsi_dev *sdev, struct net_device *dev,
-						       struct ieee80211_mgmt *mgmt, size_t mgmt_len, size_t *new_len)
+						       struct ieee80211_mgmt *mgmt, size_t mgmt_len, size_t *new_len,
+						       u16 freq)
 {
 	struct netdev_vif *ndev_vif = netdev_priv(dev);
 	u8 *new_mgmt;
@@ -60,6 +61,7 @@ static struct ieee80211_mgmt *slsi_rx_scan_update_ssid(struct slsi_dev *sdev, st
 	const u8 *mgmt_pos;
 	const u8 *ssid;
 	int     i;
+	int band;
 
 	if (!SLSI_IS_VIF_INDEX_WLAN(ndev_vif))
 		return NULL;
@@ -78,9 +80,11 @@ static struct ieee80211_mgmt *slsi_rx_scan_update_ssid(struct slsi_dev *sdev, st
 	if ((ssid[1] > 0) && (ssid[2] != '\0'))
 		return NULL;
 
+	band = (freq / 1000) == 2 ? SLSI_FREQ_BAND_2GHZ : SLSI_FREQ_BAND_5GHZ;
+
 	/* check we have a known ssid for a bss */
 	for (i = 0; i < SLSI_SCAN_SSID_MAP_MAX; i++) {
-		if (SLSI_ETHER_EQUAL(sdev->ssid_map[i].bssid, mgmt->bssid)) {
+		if (SLSI_ETHER_EQUAL(sdev->ssid_map[i].bssid, mgmt->bssid) && (sdev->ssid_map[i].band == band)) {
 			new_mgmt = kmalloc(mgmt_len + 34, GFP_KERNEL);
 			if (!new_mgmt) {
 				SLSI_ERR_NODEV("malloc failed(len:%ld)\n", mgmt_len + 34);
@@ -127,11 +131,12 @@ void slsi_rx_scan_pass_to_cfg80211(struct slsi_dev *sdev, struct net_device *dev
 		struct ieee80211_mgmt *mgmt_new;
 		size_t mgmt_new_len = 0;
 
-		mgmt_new = slsi_rx_scan_update_ssid(sdev, dev, mgmt, mgmt_len, &mgmt_new_len);
+		mgmt_new = slsi_rx_scan_update_ssid(sdev, dev, mgmt, mgmt_len, &mgmt_new_len, freq);
 		if (mgmt_new)
 			bss = cfg80211_inform_bss_frame(sdev->wiphy, channel, mgmt_new, mgmt_new_len, signal, GFP_KERNEL);
 		else
 			bss = cfg80211_inform_bss_frame(sdev->wiphy, channel, mgmt, mgmt_len, signal, GFP_KERNEL);
+
 		slsi_cfg80211_put_bss(sdev->wiphy, bss);
 		kfree(mgmt_new);
 	} else {
@@ -148,19 +153,22 @@ static int slsi_add_to_scan_list(struct slsi_dev *sdev, struct netdev_vif *ndev_
 	struct slsi_scan_result *scan_result, *current_result, *prev = NULL;
 	struct ieee80211_mgmt *mgmt = fapi_get_mgmt(skb);
 	bool found = 0, skb_stored = 0;
-	int current_rssi;
+	int current_rssi, current_band;
 
 	SLSI_MUTEX_LOCK(ndev_vif->scan_result_mutex);
 	head = ndev_vif->scan[scan_id].scan_results;
 	scan_result = head;
 	current_rssi =  fapi_get_s16(skb, u.mlme_scan_ind.rssi);
+	current_band = (fapi_get_s16(skb,
+				     u.mlme_scan_ind.channel_frequency) /
+			2000) == 2 ? SLSI_FREQ_BAND_2GHZ : SLSI_FREQ_BAND_5GHZ;
 
 	/* Boost 5GHz results so that all 5GHz resuls are sent up */
 	if (fapi_get_u16(skb, u.mlme_scan_ind.channel_frequency) > 10000)
 		current_rssi = 1024; /* any arbitrary high value.*/
 
 	while (scan_result) {
-		if (SLSI_ETHER_EQUAL(scan_result->bssid, mgmt->bssid)) {
+		if (SLSI_ETHER_EQUAL(scan_result->bssid, mgmt->bssid) && (scan_result->band == current_band)) {
 			/*entry exists for bssid*/
 			if (!scan_result->probe_resp && ieee80211_is_probe_resp(mgmt->frame_control)) {
 				scan_result->probe_resp = skb;
@@ -223,7 +231,7 @@ static int slsi_add_to_scan_list(struct slsi_dev *sdev, struct netdev_vif *ndev_
 		SLSI_ETHER_COPY(current_result->bssid, mgmt->bssid);
 
 		current_result->rssi = current_rssi;
-
+		current_result->band = current_band;
 		if (ieee80211_is_beacon(mgmt->frame_control)) {
 			current_result->beacon = skb;
 			if (!scan_ssid || !scan_ssid[1] || scan_ssid[2] == '\0')
@@ -356,8 +364,9 @@ void slsi_rx_scan_ind(struct slsi_dev *sdev, struct net_device *dev, struct sk_b
 		SLSI_NET_DBG1(dev, SLSI_MLME, "Connect/Roaming scan indication received, bssid:%pM\n", fapi_get_mgmt(skb)->bssid);
 		slsi_kfree_skb(ndev_vif->sta.mlme_scan_ind_skb);
 		ndev_vif->sta.mlme_scan_ind_skb = skb;
-	} else if (ndev_vif->scan[scan_id].scan_req || ndev_vif->scan[scan_id].acs_request
-		   || ndev_vif->scan[SLSI_SCAN_HW_ID].is_blocking_scan) {
+	} else if (ndev_vif->scan[scan_id].scan_req || ndev_vif->scan[scan_id].sched_req ||
+		   ndev_vif->scan[scan_id].acs_request ||
+		   ndev_vif->scan[SLSI_SCAN_HW_ID].is_blocking_scan) {
 		slsi_roam_channel_cache_add(sdev, dev, skb);
 		if (SLSI_IS_VIF_INDEX_WLAN(ndev_vif))
 			slsi_add_to_scan_list(sdev, ndev_vif, skb, scan_ssid, scan_id);
@@ -376,10 +385,13 @@ static void slsi_scan_update_ssid_map(struct slsi_dev *sdev, struct net_device *
 	const u8              *ssid_ie = NULL, *connected_ssid = NULL;
 	int                   i, found = 0, is_connected = 0;
 	struct slsi_scan_result	*scan_result = NULL;
+	int band;
 
 	WARN_ON(!SLSI_MUTEX_IS_LOCKED(ndev_vif->scan_result_mutex));
 
 	if (ndev_vif->activated && ndev_vif->vif_type == FAPI_VIFTYPE_STATION && ndev_vif->sta.sta_bss) {
+		band = (ndev_vif->sta.sta_bss->channel->center_freq /
+			1000) == 2 ? SLSI_FREQ_BAND_2GHZ : SLSI_FREQ_BAND_5GHZ;
 		is_connected = 1;
 		connected_ssid = cfg80211_find_ie(WLAN_EID_SSID, ndev_vif->sta.sta_bss->ies->data, ndev_vif->sta.sta_bss->ies->len);
 	}
@@ -391,13 +403,15 @@ static void slsi_scan_update_ssid_map(struct slsi_dev *sdev, struct net_device *
 			continue;
 
 		/* We are connected to this hidden AP. So no need to check if this AP is present in scan results */
-		if (is_connected && SLSI_ETHER_EQUAL(ndev_vif->sta.sta_bss->bssid, sdev->ssid_map[i].bssid))
+		if (is_connected && SLSI_ETHER_EQUAL(ndev_vif->sta.sta_bss->bssid, sdev->ssid_map[i].bssid) &&
+		    (sdev->ssid_map[i].band == band))
 			continue;
 
 		/* If this entry AP is found to be non-hidden, remove entry. */
 		scan_result = ndev_vif->scan[scan_id].scan_results;
 		while (scan_result) {
-			if (SLSI_ETHER_EQUAL(sdev->ssid_map[i].bssid, scan_result->bssid)) {
+			if (SLSI_ETHER_EQUAL(sdev->ssid_map[i].bssid, scan_result->bssid) &&
+			    (sdev->ssid_map[i].band == scan_result->band)) {
 				/* AP is no more hidden. OR AP is hidden but did not
 				 * receive probe resp. Go for expiry.
 				 */
@@ -425,7 +439,8 @@ static void slsi_scan_update_ssid_map(struct slsi_dev *sdev, struct net_device *
 		ssid_ie = NULL;
 
 		if (scan_result->hidden) {
-			if (is_connected && SLSI_ETHER_EQUAL(ndev_vif->sta.sta_bss->bssid, scan_result->bssid)) {
+			if (is_connected && SLSI_ETHER_EQUAL(ndev_vif->sta.sta_bss->bssid, scan_result->bssid) &&
+			    (scan_result->band == band)) {
 				ssid_ie = connected_ssid;
 			} else if (scan_result->probe_resp) {
 				mgmt = fapi_get_mgmt(scan_result->probe_resp);
@@ -443,7 +458,8 @@ static void slsi_scan_update_ssid_map(struct slsi_dev *sdev, struct net_device *
 		for (i = 0; i < SLSI_SCAN_SSID_MAP_MAX; i++) {
 			if (!sdev->ssid_map[i].ssid_len)
 				continue;
-			if (SLSI_ETHER_EQUAL(scan_result->bssid, sdev->ssid_map[i].bssid)) {
+			if (SLSI_ETHER_EQUAL(scan_result->bssid, sdev->ssid_map[i].bssid) &&
+			    (scan_result->band == sdev->ssid_map[i].band)) {
 				sdev->ssid_map[i].ssid_len = ssid_ie[1];
 				memcpy(sdev->ssid_map[i].ssid, &ssid_ie[2], ssid_ie[1]);
 				found = 1;
@@ -458,6 +474,7 @@ static void slsi_scan_update_ssid_map(struct slsi_dev *sdev, struct net_device *
 				SLSI_ETHER_COPY(sdev->ssid_map[i].bssid, scan_result->bssid);
 				sdev->ssid_map[i].age = 0;
 				sdev->ssid_map[i].ssid_len = ssid_ie[1];
+				sdev->ssid_map[i].band = scan_result->band;
 				memcpy(sdev->ssid_map[i].ssid, &ssid_ie[2], ssid_ie[1]);
 				break;
 			}
@@ -950,7 +967,7 @@ void slsi_rx_scan_done_ind(struct slsi_dev *sdev, struct net_device *dev, struct
 
 void slsi_rx_channel_switched_ind(struct slsi_dev *sdev, struct net_device *dev, struct sk_buff *skb)
 {
-	u16 freq;
+	u16 freq = 0;
 	int width;
 	int primary_chan_pos;
 	u16 temp_chan_info;
@@ -959,19 +976,19 @@ void slsi_rx_channel_switched_ind(struct slsi_dev *sdev, struct net_device *dev,
 	struct netdev_vif *ndev_vif = netdev_priv(dev);
 
 	temp_chan_info = fapi_get_u16(skb, u.mlme_channel_switched_ind.channel_information);
-	freq = fapi_get_u16(skb, u.mlme_channel_switched_ind.channel_frequency);
-	freq = freq / 2;
+	cf1 = fapi_get_u16(skb, u.mlme_channel_switched_ind.channel_frequency);
+	cf1 = cf1 / 2;
 
 	primary_chan_pos = (temp_chan_info >> 8);
 	width = (temp_chan_info & 0x00FF);
 
-	/*If width is 80Mhz then do frequency calculation, else store as it is*/
+	/* If width is 80MHz/40MHz then do frequency calculation, else store as it is */
 	if (width == 40)
-		cf1 = (10 + freq - (primary_chan_pos * 20));
+		freq = cf1 + (primary_chan_pos * 20) - 10;
 	else if (width == 80)
-		cf1 = (30 + freq - (primary_chan_pos * 20));
+		freq = cf1 + (primary_chan_pos * 20) - 30;
 	else
-		cf1 = freq;
+		freq = cf1;
 
 	if (width == 20)
 		width = NL80211_CHAN_WIDTH_20;
