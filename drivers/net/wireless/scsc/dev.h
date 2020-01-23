@@ -287,7 +287,6 @@ struct slsi_scan_result {
 	struct sk_buff *probe_resp;
 	struct sk_buff *beacon;
 	struct slsi_scan_result *next;
-	int band;
 };
 
 /* Per Interface Scan Data
@@ -311,7 +310,6 @@ struct slsi_ssid_map {
 	u8 ssid[32];
 	u8 ssid_len;
 	u8 age;
-	int band;
 };
 
 struct slsi_peer {

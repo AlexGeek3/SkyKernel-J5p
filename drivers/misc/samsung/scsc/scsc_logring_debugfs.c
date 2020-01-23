@@ -502,8 +502,7 @@ static ssize_t samwritefile_write(struct file *filp, const char __user *ubuf,
 	struct write_config *wc = filp->private_data;
 
 	if (wc) {
-		/* wc->buf is null terminated as it's kzalloc'ed */
-		count = count < wc->buf_sz ? count : wc->buf_sz - 1;
+		count = count < wc->buf_sz ? count : wc->buf_sz;
 		if (copy_from_user(wc->buf, ubuf, count))
 			return -EINVAL;
 		written_bytes = scsc_printk_tag(NO_ECHO_PRK, TEST_ME,
