@@ -2704,7 +2704,7 @@ static void unlock_page_lru(struct page *page, int isolated)
 		struct lruvec *lruvec;
 
 		lruvec = mem_cgroup_page_lruvec(page, zone);
-		VM_BUG_ON_PAGE(PageLRU(page), page);
+		VM_BUG_ON_PAGE(!PageHWPoison(page) && page_count(page), page);
 		SetPageLRU(page);
 		add_page_to_lru_list(page, lruvec, page_lru(page));
 	}
