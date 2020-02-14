@@ -79,13 +79,6 @@ static int tcp_out_of_resources(struct sock *sk, bool do_reset)
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPABORTONMEMORY);
 		return 1;
 	}
-
-	if (!check_net(sock_net(sk))) {
-		/* Not possible to send reset; just close */
-		tcp_done(sk);
-		return 1;
-	}
-
 	return 0;
 }
 

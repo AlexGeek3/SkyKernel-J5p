@@ -225,12 +225,6 @@ static int arp_constructor(struct neighbour *neigh)
 	struct net_device *dev = neigh->dev;
 	struct in_device *in_dev;
 	struct neigh_parms *parms;
-    u32 inaddr_any = INADDR_ANY;
-
-	if (dev->flags & (IFF_LOOPBACK | IFF_POINTOPOINT))
-		memcpy(neigh->primary_key, &inaddr_any, arp_tbl.key_len);
-
-	addr = *(__be32 *)neigh->primary_key;
 
 	rcu_read_lock();
 	in_dev = __in_dev_get_rcu(dev);

@@ -411,7 +411,7 @@ struct neighbour *neigh_lookup(struct neigh_table *tbl, const void *pkey,
 
 	rcu_read_lock_bh();
 	nht = rcu_dereference_bh(tbl->nht);
- 	hash_val = tbl->hash(n->primary_key, dev, nht->hash_rnd) >> (32 - nht->hash_shift);
+	hash_val = tbl->hash(pkey, dev, nht->hash_rnd) >> (32 - nht->hash_shift);
 
 	for (n = rcu_dereference_bh(nht->hash_buckets[hash_val]);
 	     n != NULL;
@@ -520,7 +520,7 @@ struct neighbour *__neigh_create(struct neigh_table *tbl, const void *pkey,
 	     n1 != NULL;
 	     n1 = rcu_dereference_protected(n1->next,
 			lockdep_is_held(&tbl->lock))) {
- 		if (dev == n1->dev && !memcmp(n1->primary_key, n->primary_key, key_len)) {
+		if (dev == n1->dev && !memcmp(n1->primary_key, pkey, key_len)) {
 			if (want_ref)
 				neigh_hold(n1);
 			rc = n1;
